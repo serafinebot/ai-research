@@ -1,4 +1,5 @@
 import math
+import hashlib
 from graphviz import Digraph
 
 class Value:
@@ -13,21 +14,61 @@ class Value:
   def __repr__(self): return f"{self.label} = {self.value}"
 
   def __add__(self, o):
+    o = o if isinstance(o, Value) else Value(o, label=str(o))
     out = Value(self.value + o.value, parents=(self, o), op="+", label=f"{self.label} + {o.label}")
-    def bw(): self.grad, o.grad = out.grad, out.grad
+    def bw():
+      self.grad += out.grad
+      o.grad += out.grad
     out._backward = bw
     return out
 
+  def __radd__(self, o):
+    return self + o
+
+  def __neg__(self):
+    return self * -1
+
+  def __sub__(self, o):
+    return self + (-o)
+
   def __mul__(self, o):
+    o = o if isinstance(o, Value) else Value(o, label=str(o))
     out = Value(self.value * o.value, parents=(self, o), op="*", label=f"{self.label} * {o.label}")
-    def bw(): self.grad, o.grad = o.value * out.grad, self.value * out.grad
+    def bw():
+      self.grad += o.value * out.grad
+      o.grad += self.value * out.grad
     out._backward = bw
     return out
+
+  def __rmul__(self, o):
+    return self * o
+
+  def __truediv__(self, o):
+    return self * o ** -1
+
+  def exp(self):
+    out = Value(math.exp(self.value), parents=(self,), op="exp", label=f"e^{self.label}")
+    def bw():
+      self.grad = out.grad * out.value
+    out._backward = bw
+    return out
+
+  def __pow__(self, o):
+    assert isinstance(o, (int, float)), "only int and float are supported"
+    out = Value(self.value ** o, parents=(self,), op=f"^{o}", label=f"{self.label}^{o}")
+    def bw():
+      self.grad += o * self.value ** (o - 1)
+    out._backward = bw
+    return out
+
+  def __rpow__(self, o):
+    return self ** o
 
   def tanh(self):
     t = math.exp(2 * self.value)
     out = Value((t - 1) / (t + 1), parents=(self,), op="tanh", label=f"tanh({self.label})")
-    def bw(): self.grad = 1 - out.value**2
+    def bw():
+      self.grad += 1 - out.value**2
     out._backward = bw
     return out
 
@@ -35,7 +76,7 @@ class Value:
     l = []
     v = set()
     def topo(e):
-      if v not in v:
+      if e not in v:
         v.add(e)
         for p in e.parents: topo(p)
         l.append(e)
@@ -48,18 +89,19 @@ class Value:
 
   def graph(self):
     dot = Digraph(format="pdf", graph_attr={"rankdir": "LR"})
-    cnt, st = 0, [(0, self)]
+    nodes, st = set(), [self]
     while len(st) > 0:
-      child, e = st.pop()
-      label = f"{{ {e.label} | value {e.value:.4f} | grad: {e.grad:.4f} }}"
-      dot.node(name=str(cnt), label=label, shape="record")
-      if child > 0: dot.edge(str(cnt), str(child))
-      cnt += 1
-
-      if e.op is not None:
-        dot.node(name=str(cnt), label=e.op, shape="circle")
-        dot.edge(str(cnt), str(cnt-1))
-        cnt += 1
-
-      st += [(cnt-1, p) for p in e.parents]
+      node = st.pop()
+      if (i := id(node)) in nodes: continue
+      nodes.add(i)
+      label = f"{{ {node.label} | value {node.value:.4f} | grad: {node.grad:.4f} }}"
+      dot.node(name=str(i), label=label, shape="record")
+      if node.op is None: continue
+      opid = f"{i}{node.op}"
+      dot.node(name=opid, label=node.op, shape="circle")
+      dot.edge(str(opid), str(i))
+      for p in node.parents:
+        j = id(p)
+        dot.edge(str(j), str(opid))
+        st.append(p)
     return dot
