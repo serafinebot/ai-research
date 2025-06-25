@@ -4,16 +4,7 @@ from __future__ import annotations
 
 from model import Value
 
-# a = Value(2.0, label="a")
-# b = Value(-3.0, label="b")
-# c = Value(10.0, label="c")
-# e = a * b; e.label = "e"
-# d = e + c; d.label = "d"
-# f = Value(-2.0, label="f")
-# L = d * f; L.label = "L"
-#
-# L.backward()
-# L.graph().render("L")
+# ----------------------------------------------
 
 x1 = Value(2.0, label="x1")
 x2 = Value(0.0, label="x2")
@@ -26,7 +17,7 @@ x2w2 = x2*w2; x2w2.label = "x2*w2"
 x1w1x2w2 = x1w1 + x2w2; x1w1x2w2.label = "x1*w1 + x2*w2"
 n = x1w1x2w2 + b; n.label = "n"
 
-# o = n.tanh()
+o = n.tanh()
 e = (2*n).exp()
 o = (e - 1) / (e + 1)
 o.label = "o"
@@ -34,8 +25,10 @@ o.label = "o"
 o.backward()
 o.graph().render("o")
 
+# ----------------------------------------------
+
 # a = Value(4, label="a")
 # b = Value(2, label="b")
-# o = a / b
+# o = a ** -1
 # o.backward()
 # o.graph().render("o")

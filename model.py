@@ -57,7 +57,7 @@ class Value:
     assert isinstance(o, (int, float)), "only int and float are supported"
     out = Value(self.value ** o, parents=(self,), op=f"^{o}", label=f"{self.label}^{o}")
     def bw():
-      self.grad += o * self.value ** (o - 1)
+      self.grad += o * self.value ** (o - 1) * out.grad
     out._backward = bw
     return out
 
