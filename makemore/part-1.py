@@ -34,6 +34,7 @@ if SHOW_MAP:
   plt.tight_layout()
   plt.show()
 
+# TODO: this section is slow because tinygrad runs the multinomial kernel everytime (.item() for each while loop iteration; and multiple kernels per loop?), find a better way to do this
 # predict some words
 Tensor.manual_seed(2147483647) # adjust random seed for deterministic results
 for _ in range(5):
