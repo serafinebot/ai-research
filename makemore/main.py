@@ -30,11 +30,7 @@ class MLP:
     # random.seed(1234567890)
     random.shuffle(words)
     n1, n2 = int(0.80 * len(words)), int(0.90 * len(words))
-    self.data = {
-      "train": self._build_dataset(words[:n1]),
-      "valid": self._build_dataset(words[n1:n2]),
-      "test": self._build_dataset(words[n2:])
-    }
+    self.data = { "train": self._build_dataset(words[:n1]), "valid": self._build_dataset(words[n1:n2]), "test": self._build_dataset(words[n2:]) }
 
   def _build_dataset(self, words):
     x, y = [], []
@@ -58,9 +54,8 @@ class MLP:
 
     return logits, loss
 
-  def step(self, lr):
-    _, loss = self(*self.data["train"], bs=32)
-    # print(f"{loss.item():.6f}")
+  def step(self, lr, bs):
+    _, loss = self(*self.data["train"], bs=bs)
 
     # backward pass
     for p in self.parameters: p.grad = None
@@ -88,19 +83,20 @@ class MLP:
 if __name__ == "__main__":
   with open("names.txt", "r") as f: words = f.read().splitlines()
 
-  mlp = MLP(words, n_ctx=5, n_embed=30, n_hidden=500)
+  n_batch = 32
+  mlp = MLP(words, n_ctx=5, n_embed=30, n_hidden=300)
   print(f"number of parameters: {mlp.n_parameters}")
   print()
 
   n_steps = 200000
   stepi = torch.arange(0, n_steps)
+  lri = 10 ** -(stepi / 200000 + 1)
   lossi = []
   for i in range(n_steps):
-    # TODO: find a better way to determine the correct learning rate to use
-    lr = 0.05 if i < 100000 else 0.01
-    loss = mlp.step(lr)
-    if i % 10000 == 0: print(f"{i:6d}/{n_steps:6d}  loss: {loss.item():12.8f}")
-    # lossi.append(loss.log10().item())
+    lr = lri[i]
+    loss = mlp.step(lr, 64)
+    if i % 10000 == 0: print(f"{i:6d}/{n_steps:6d}  batch size: {n_batch:4d}  loss: {loss.item():12.8f}")
+    lossi.append(loss.log10().item())
 
   _, loss_train = mlp(*mlp.data["train"])
   _, loss_valid = mlp(*mlp.data["valid"])
@@ -112,6 +108,16 @@ if __name__ == "__main__":
   print("\n".join(mlp.sample(30)))
 
   # plt.figure(figsize=(16, 9))
-  # plt.plot(stepi, lossi)
+  # plt.plot(stepi, lossi, label="loss")
+
+  # lr10000 = 10 ** -(stepi / 10000 + 1)
+  # lr40000 = 10 ** -(stepi / 40000 + 1)
+  # lr200000 = 10 ** -(stepi / 200000 + 1)
+  # print(lr200000[-1])
+  # plt.plot(stepi, lr10000, color="blue")
+  # plt.plot(stepi, lr40000, color="red")
+  # plt.plot(stepi, lr200000, color="green")
+
+  # plt.legend(loc="upper right")
   # plt.tight_layout()
   # plt.show()
