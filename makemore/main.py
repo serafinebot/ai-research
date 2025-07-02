@@ -20,10 +20,13 @@ class MLP:
     g = None
     self.c = torch.randn((self.n_vocab, n_embed), generator=g)
     self.w1 = torch.randn((n_ctx * n_embed, n_hidden), generator=g) * (5 / 3) / ((n_ctx * n_embed) ** 0.5)
-    self.b1 = torch.randn(n_hidden, generator=g) * 0.01
     self.w2 = torch.randn((n_hidden, self.n_vocab), generator=g) * 0.01
     self.b2 = torch.randn(self.n_vocab, generator=g) * 0.0
-    self.parameters = [self.c, self.w1, self.b1, self.w2, self.b2]
+    self.bngain = torch.zeros((1, n_hidden))
+    self.bnbias = torch.ones((1, n_hidden))
+    self.bnmean = torch.zeros((1, n_hidden))
+    self.bnstd = torch.ones((1, n_hidden))
+    self.parameters = [self.c, self.w1, self.w2, self.b2, self.bngain, self.bnbias]
     self.n_parameters = sum(p.nelement() for p in self.parameters)
     for p in self.parameters: p.requires_grad = True
 
@@ -47,8 +50,17 @@ class MLP:
 
     # forward pass
     emb = self.c[x]
-    preh = emb.view(-1, self.w1.shape[0]) @ self.w1 + self.b1
-    h = preh.tanh()
+    hpreact = emb.view(-1, self.w1.shape[0]) @ self.w1
+
+    # batch normalization
+    bnmeani = hpreact.mean(0, keepdim=True)
+    bnstdi = hpreact.std(0, keepdim=True)
+    hnorm = self.bngain * (hpreact - bnmeani) / bnstdi + self.bnbias
+    with torch.no_grad():
+      self.bnmean = 0.999 * self.bnmean + 0.001 * bnmeani
+      self.bnstd = 0.999 * self.bnstd + 0.001 * bnstdi
+
+    h = hnorm.tanh()
     logits = h @ self.w2 + self.b2
     loss = F.cross_entropy(logits, y)
 
@@ -64,13 +76,16 @@ class MLP:
 
     return loss
 
+  @torch.no_grad()
   def sample(self, count):
     samples = []
     for _ in range(count):
       ctx, word = [0] * self.n_ctx, []
       while True:
         emb = self.c[ctx]
-        h = torch.tanh(emb.view(-1, self.w1.shape[0])) @ self.w1 + self.b1
+        hpreact = emb.view(-1, self.w1.shape[0]) @ self.w1
+        hnorm = self.bngain * (hpreact - self.bnmean) / self.bnstd + self.bnbias
+        h = hnorm.tanh()
         logits = h @ self.w2 + self.b2
         probs = logits.softmax(1)
         ix = probs.multinomial(1, replacement=True).item()
@@ -85,6 +100,7 @@ if __name__ == "__main__":
 
   n_batch = 32
   mlp = MLP(words, n_ctx=5, n_embed=30, n_hidden=300)
+  # mlp = MLP(words, n_ctx=3, n_embed=10, n_hidden=200)
   print(f"number of parameters: {mlp.n_parameters}")
   print()
 
