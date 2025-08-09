@@ -109,7 +109,7 @@ if __name__ == "__main__":
     exact = torch.all(t.grad == dt).item()
     approx = torch.allclose(t.grad, dt)
     maxdiff = (t.grad - dt).abs().max().item()
-    print(f"{Colors.GREEN if exact or approx else Colors.RED} {name:>15s} {Colors.RESET} maxdiff: {maxdiff:.6f} {"*" if not exact and approx else ""}")
+    print(f"{Colors.GREEN if exact or approx else Colors.RED} {name:>15s} {Colors.RESET} maxdiff: {maxdiff:.12f} {"*" if not exact and approx else ""}")
 
   # loss = -logprobs[range(n_batch), Y].mean()
   # mean ---> (X1 + ... + Xn) / n = (X1 + ... + Xn) * n**-1 = n**-1 * X1 + ... + n**-1 * Xn
@@ -257,3 +257,10 @@ if __name__ == "__main__":
     for j in range(X.shape[1]):
       dC[X[i,j]] += demb[i,j]
   cmp("C", dC, C)
+
+  # ********************** MANUAL LOGITS BACKPROP IN ONE GO ************************
+  dlogits = F.softmax(logits, 1)
+  dlogits[range(n_batch), Y] -= 1 # subtract 1 for i == y
+  dlogits /= n_batch
+
+  cmp("logits", dlogits, logits)

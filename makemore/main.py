@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from matplotlib import pyplot as plt
 
+def s(shape): return "(" + ", ".join(map(str, shape)) + ")"
+
 # ******************** MLP ********************
 
 class MLP:
@@ -139,10 +141,12 @@ def test_mlp(words):
   # plt.tight_layout()
   # plt.show()
 
+
 # ******************** MLP Torch ********************
 
-class MLPTorch:
+class MLPTorch(nn.Module):
   def __init__(self, words, n_ctx, n_embed, n_hidden):
+    super(MLPTorch, self).__init__()
     self.vocab = ["."] + sorted(set(c for w in words for c in w))
     self.itoc = { i: c for i, c in enumerate(self.vocab) }
     self.ctoi = { c: i for i, c in enumerate(self.vocab) }
@@ -155,10 +159,10 @@ class MLPTorch:
     # g = torch.Generator().manual_seed(2147483647)
     g = None
     self.c = torch.randn((self.n_vocab, n_embed), generator=g)
-    self.layers = [
+    self.layers = nn.Sequential(
       nn.Linear(n_ctx * n_embed, n_hidden, bias=False), nn.BatchNorm1d(n_hidden), nn.Tanh(),
       nn.Linear(n_hidden, self.n_vocab), nn.BatchNorm1d(self.n_vocab)
-    ]
+    )
 
     with torch.no_grad():
       # make last layer less confident
@@ -168,9 +172,9 @@ class MLPTorch:
         if isinstance(layer, nn.Linear):
           layer.weight *= 1.0
 
-    self.parameters = [self.c] + [p for layer in self.layers for p in layer.parameters()]
-    self.n_parameters = sum(p.nelement() for p in self.parameters)
-    for p in self.parameters: p.requires_grad = True
+    # self.parameters = [self.c] + [p for layer in self.layers for p in layer.parameters()]
+    self.n_parameters = sum(p.nelement() for p in self.parameters())
+    for p in self.parameters(): p.requires_grad = True
 
     # random.seed(1234567890)
     random.shuffle(words)
@@ -187,75 +191,66 @@ class MLPTorch:
         ctx = ctx[1:] + [self.ctoi[c]]
     return torch.tensor(x), torch.tensor(y)
 
-  def __call__(self, x, y, bs=-1):
-    if bs > 0: x, y = x[ix := torch.randint(0, x.shape[0], (bs,))], y[ix]
-
-    # forward pass
+  def forward(self, x):
     emb = self.c[x]
-    # x = emb
-    x = emb.view(emb.shape[0], -1)
-    print(f"{emb.shape=}")
-    print(f"{x.shape=}")
-    for layer in self.layers: x = layer(x)
-    loss = F.cross_entropy(x, y)
+    sz = emb.size()[:-2] + (-1,)
+    if len(sz) == 1: sz = (1, sz[0])
+    return self.layers(emb.view(*sz))
 
-    return x, loss
-
-  def step(self, lr, bs):
-    _, loss = self(*self.data["train"], bs=bs)
-
-    # backward pass
-    # for layer in self.layers: layer.retain_grad()
-    for p in self.parameters: p.grad = None
-    loss.backward()
-    for p in self.parameters: p.data += -lr * p.grad
-
-    return loss
-
-  @torch.no_grad()
-  def sample(self, count):
-    samples = []
-    for _ in range(count):
+  def sample(self, n):
+    tr = self.training
+    self.eval()
+    words = []
+    for _ in range(30):
       ctx, word = [0] * self.n_ctx, []
       while True:
-        emb = self.c[ctx]
-        print(f"{emb.shape=}")
-        print(f"{self.layers[0].weight.shape=}")
-        # x = emb.view(emb.shape[0], -1)
-        x = emb.view(-1, self.layers[0].weight.shape[0])
-        print(f"{x.shape=}")
-        for layer in self.layers: x = layer(x)
-        probs = x.softmax(dim=1)
+        probs = self(ctx).softmax(dim=1)
         ix = probs.multinomial(1, replacement=True).item()
         if ix == 0: break
         ctx = ctx[1:] + [ix]
-      samples.append("".join(word))
-    return samples
+        word.append(self.itoc[ix])
+      words.append("".join(word))
+    self.train(tr)
+    return words
 
-if __name__ == "__main__":
-  with open("names.txt", "r") as f: words = f.read().splitlines()
-  # test_mlp(words)
-
-  n_batch = 64
+def test_mlp_torch(words):
   mlp = MLPTorch(words, n_ctx=5, n_embed=30, n_hidden=300)
   print(f"number of parameters: {mlp.n_parameters}")
   print()
 
+  xtr, ytr = mlp.data["train"]
+  xval, yval = mlp.data["valid"]
+
+  mlp.train()
+  n_batch = 64
   n_steps = 200000
   stepi = torch.arange(0, n_steps)
   lri = 10 ** -(stepi / 200000 + 1)
   lossi = []
   for i in range(n_steps):
+    x, y = (xtr[ix := torch.randint(0, xtr.shape[0], (n_batch,))], ytr[ix]) if n_batch > 0 else (xtr, ytr)
     lr = lri[i]
-    loss = mlp.step(lr, n_batch)
+    x = mlp(x)
+    loss = F.cross_entropy(x, y)
     if i % 10000 == 0: print(f"{i:6d}/{n_steps:6d}  batch size: {n_batch:4d}  loss: {loss.item():12.8f}")
     lossi.append(loss.log10().item())
 
-  _, loss_train = mlp(*mlp.data["train"])
-  _, loss_valid = mlp(*mlp.data["valid"])
+    for p in mlp.parameters(): p.grad = None
+    loss.backward()
+    for p in mlp.parameters(): p.data += -lr * p.grad
+
+  mlp.eval()
+  loss_train = F.cross_entropy(mlp(xtr), ytr)
+  loss_valid = F.cross_entropy(mlp(xval), yval)
   print()
   print(f"  training loss: {loss_train:.6f}")
   print(f"validation loss: {loss_valid:.6f}")
-
   print()
   print("\n".join(mlp.sample(30)))
+
+# ******************** Wave Net ********************
+
+if __name__ == "__main__": 
+  with open("names.txt", "r") as f: words = f.read().splitlines()
+  # test_mlp(words)
+  test_mlp_torch(words)
