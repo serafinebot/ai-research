@@ -20,13 +20,10 @@ class MLP:
     self.n_embed = n_embed
     self.n_hidden = n_hidden
 
-    # random number generator with fixed seed for reproducability
-    # g = torch.Generator().manual_seed(2147483647)
-    g = None
-    self.c = torch.randn((self.n_vocab, n_embed), generator=g)
-    self.w1 = torch.randn((n_ctx * n_embed, n_hidden), generator=g) * (5 / 3) / ((n_ctx * n_embed) ** 0.5)
-    self.w2 = torch.randn((n_hidden, self.n_vocab), generator=g) * 0.01
-    self.b2 = torch.randn(self.n_vocab, generator=g) * 0.0
+    self.c = torch.randn((self.n_vocab, n_embed))
+    self.w1 = torch.randn((n_ctx * n_embed, n_hidden)) * (5 / 3) / ((n_ctx * n_embed) ** 0.5)
+    self.w2 = torch.randn((n_hidden, self.n_vocab)) * 0.01
+    self.b2 = torch.randn(self.n_vocab) * 0.0
     self.bngain = torch.zeros((1, n_hidden))
     self.bnbias = torch.ones((1, n_hidden))
     self.bnmean = torch.zeros((1, n_hidden))
@@ -155,10 +152,7 @@ class MLPTorch(nn.Module):
     self.n_embed = n_embed
     self.n_hidden = n_hidden
 
-    # random number generator with fixed seed for reproducability
-    # g = torch.Generator().manual_seed(2147483647)
-    g = None
-    self.c = torch.randn((self.n_vocab, n_embed), generator=g)
+    self.c = torch.randn((self.n_vocab, n_embed))
     self.layers = nn.Sequential(
       nn.Linear(n_ctx * n_embed, n_hidden, bias=False), nn.BatchNorm1d(n_hidden), nn.Tanh(),
       nn.Linear(n_hidden, self.n_vocab), nn.BatchNorm1d(self.n_vocab)
@@ -176,7 +170,6 @@ class MLPTorch(nn.Module):
     self.n_parameters = sum(p.nelement() for p in self.parameters())
     for p in self.parameters(): p.requires_grad = True
 
-    # random.seed(1234567890)
     random.shuffle(words)
     n1, n2 = int(0.80 * len(words)), int(0.90 * len(words))
     self.data = { "train": self._build_dataset(words[:n1]), "valid": self._build_dataset(words[n1:n2]), "test": self._build_dataset(words[n2:]) }
@@ -201,7 +194,7 @@ class MLPTorch(nn.Module):
     tr = self.training
     self.eval()
     words = []
-    for _ in range(30):
+    for _ in range(n):
       ctx, word = [0] * self.n_ctx, []
       while True:
         probs = self(ctx).softmax(dim=1)
@@ -248,9 +241,130 @@ def test_mlp_torch(words):
   print()
   print("\n".join(mlp.sample(30)))
 
-# ******************** Wave Net ********************
+
+# ******************** CNN ********************
+
+class MergeContiguous(nn.Module):
+  def __init__(self, n):
+    super(MergeContiguous, self).__init__()
+    self.n = n
+
+  def forward(self, x):
+    return x.view(x.shape[0], x.shape[1] // self.n, x.shape[2] * self.n)
+
+class CNN(nn.Module):
+  def __init__(self, words, n_ctx, n_embed, n_hidden):
+    super(CNN, self).__init__()
+    self.vocab = ["."] + sorted(set(c for w in words for c in w))
+    self.itoc = { i: c for i, c in enumerate(self.vocab) }
+    self.ctoi = { c: i for i, c in enumerate(self.vocab) }
+    self.n_vocab = len(self.vocab)
+    self.n_ctx = n_ctx
+    self.n_embed = n_embed
+    self.n_hidden = n_hidden
+
+    # using LayerNorm over BatchNorm1d to avoid weird permutations
+    # TODO: how different is LayerNorm from BatchNorm1d? What are the tradeoffs?
+    self.layers = nn.Sequential(
+      nn.Embedding(self.n_vocab, n_embed),
+      MergeContiguous(2), nn.Linear(n_embed * 2, n_hidden, bias=False), nn.LayerNorm(n_hidden), nn.Tanh(),
+      MergeContiguous(2), nn.Linear(n_hidden * 2, n_hidden, bias=False), nn.LayerNorm(n_hidden), nn.Tanh(),
+      MergeContiguous(2), nn.Linear(n_hidden * 2, n_hidden, bias=False), nn.LayerNorm(n_hidden), nn.Tanh(),
+      nn.Linear(n_hidden, self.n_vocab), nn.Flatten(start_dim=1)
+    )
+
+    with torch.no_grad():
+      # make last layer less confident
+      self.layers[-2].weight *= 0.1
+      # apply gain to linear layers
+      for layer in self.layers:
+        if isinstance(layer, nn.Linear):
+          layer.weight *= 1.0
+
+    self.n_parameters = sum(p.nelement() for p in self.parameters())
+    for p in self.parameters(): p.requires_grad = True
+
+    random.seed(1234567890) # set seed for reproducability
+    random.shuffle(words)
+    n1, n2 = int(0.80 * len(words)), int(0.90 * len(words))
+    self.data = { "train": self._build_dataset(words[:n1]), "valid": self._build_dataset(words[n1:n2]), "test": self._build_dataset(words[n2:]) }
+
+  def _build_dataset(self, words):
+    x, y = [], []
+    for word in words:
+      ctx = [0] * self.n_ctx
+      for c in word + ".":
+        x.append(ctx)
+        y.append(self.ctoi[c])
+        ctx = ctx[1:] + [self.ctoi[c]]
+    return torch.tensor(x), torch.tensor(y)
+
+  def forward(self, x):
+    # for l in self.layers:
+    #   print(f"{s(x.shape):>12s} -> {l.__class__.__name__:16s} -> ", end="")
+    #   x = l(x)
+    #   print(f"{s(x.shape):>12s}")
+    # return x
+    return self.layers(x)
+
+  def sample(self, n):
+    tr = self.training
+    self.eval()
+    # TODO: as these are convolutions, is it possible to calculate all of the samples at once?
+    words = []
+    for _ in range(30):
+      ctx = torch.zeros(1, self.n_ctx, dtype=torch.int)
+      word = []
+      while True:
+        probs = self(ctx).softmax(dim=1)
+        ix = probs.multinomial(1, replacement=True).item()
+        if ix == 0: break
+        ctx = ctx.roll(-1)
+        ctx[-1] = ix
+        word.append(self.itoc[ix])
+      words.append("".join(word))
+    self.train(tr)
+    return words
+
+def test_cnn(words):
+  model = CNN(words, n_ctx=8, n_embed=24, n_hidden=300)
+  print(f"number of parameters: {model.n_parameters}")
+  print()
+
+  xtr, ytr = model.data["train"]
+  xval, yval = model.data["valid"]
+
+  model.train()
+  n_batch = 64
+  n_steps = 200000
+  # n_steps = 10000
+  stepi = torch.arange(0, n_steps)
+  lri = 10 ** -(stepi / 200000 + 1)
+  lossi = []
+  for i in range(n_steps):
+    x, y = (xtr[ix := torch.randint(0, xtr.shape[0], (n_batch,))], ytr[ix]) if n_batch > 0 else (xtr, ytr)
+    lr = lri[i]
+    x = model(x)
+    loss = F.cross_entropy(x, y)
+    if i % 10000 == 0: print(f"{i:6d}/{n_steps:6d}  batch size: {n_batch:4d}  loss: {loss.item():12.8f}")
+    lossi.append(loss.log10().item())
+
+    for p in model.parameters(): p.grad = None
+    loss.backward()
+    for p in model.parameters(): p.data += -lr * p.grad
+
+  model.eval()
+  loss_train = F.cross_entropy(model(xtr), ytr)
+  loss_valid = F.cross_entropy(model(xval), yval)
+  print()
+  print(f"  training loss: {loss_train:.6f}")
+  print(f"validation loss: {loss_valid:.6f}")
+  print()
+  print("\n".join(model.sample(30)))
 
 if __name__ == "__main__": 
   with open("names.txt", "r") as f: words = f.read().splitlines()
+  torch.manual_seed(1234567890)
   # test_mlp(words)
-  test_mlp_torch(words)
+  # test_mlp_torch(words)
+  test_cnn(words)
