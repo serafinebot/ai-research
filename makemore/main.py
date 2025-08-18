@@ -260,8 +260,8 @@ class BatchNorm1d(nn.Module):
     self.eps = eps
     self.momentum = momentum
     self.training = True
-    self.gamma = torch.ones(dim)
-    self.beta = torch.zeros(dim)
+    self.gamma = nn.Parameter(torch.ones(dim))
+    self.beta = nn.Parameter(torch.zeros(dim))
     self.running_mean = torch.zeros(dim)
     self.running_var = torch.ones(dim)
 
@@ -284,9 +284,6 @@ class BatchNorm1d(nn.Module):
         self.running_var = (1 - self.momentum) * self.running_var + self.momentum * xvar
 
     return self.out
-
-  def parameters(self):
-    return [self.gamma, self.beta]
 
 class CNN(nn.Module):
   def __init__(self, words, n_ctx, n_embed, n_hidden):
@@ -350,11 +347,13 @@ class CNN(nn.Module):
     self.eval()
     # TODO: as these are convolutions, is it possible to calculate all of the samples at once?
     words = []
-    for _ in range(30):
+    for _ in range(n):
       ctx = torch.zeros(1, self.n_ctx, dtype=torch.int)
       word = []
       while True:
         probs = self(ctx).softmax(dim=1)
+        probs[0, 0] *= 0.1 # make the '.' character (end sequence) less confident (apply a downweight)
+        probs /= probs.sum() # renormalize the probability distribution
         ix = probs.multinomial(1, replacement=True).item()
         if ix == 0: break
         ctx = ctx.roll(-1)
@@ -375,18 +374,13 @@ def test_cnn(words):
   model.train()
   n_batch = 64
   n_steps = 200000
-  n_steps = 10000
-  # n_steps = 0
   stepi = torch.arange(0, n_steps)
   lri = 10 ** -(stepi / 200000 + 1)
   lossi = []
   for i in range(n_steps):
     x, y = (xtr[ix := torch.randint(0, xtr.shape[0], (n_batch,))], ytr[ix]) if n_batch > 0 else (xtr, ytr)
-    # for wix, cix in zip(x, y): print(f"{"".join(model.toc(wix.tolist()))} -> {model.toc(cix.item())}")
     lr = lri[i]
     x = model(x)
-    # print(x.shape)
-    # return
     loss = F.cross_entropy(x, y)
     if i % 10000 == 0: print(f"{i:6d}/{n_steps:6d}  batch size: {n_batch:4d}  loss: {loss.item():12.8f}")
     lossi.append(loss.log10().item())
