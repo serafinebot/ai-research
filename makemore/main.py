@@ -4,6 +4,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from collections.abc import Iterable
 from matplotlib import pyplot as plt
 
 def s(shape): return "(" + ", ".join(map(str, shape)) + ")"
@@ -252,12 +253,49 @@ class MergeContiguous(nn.Module):
   def forward(self, x):
     return x.view(x.shape[0], x.shape[1] // self.n, x.shape[2] * self.n)
 
+# custom BatchNorm1d as nn.BatchNorm1d expects the shape (N, C, L) and we are using (N, L, C)
+class BatchNorm1d(nn.Module):
+  def __init__(self, dim, eps=1e-5, momentum=0.1):
+    super(BatchNorm1d, self).__init__()
+    self.eps = eps
+    self.momentum = momentum
+    self.training = True
+    self.gamma = torch.ones(dim)
+    self.beta = torch.zeros(dim)
+    self.running_mean = torch.zeros(dim)
+    self.running_var = torch.ones(dim)
+
+  def forward(self, x):
+    if self.training:
+      if x.ndim == 2: dim = 0
+      elif x.ndim == 3: dim = (0, 1)
+      xmean = x.mean(dim, keepdim=True)
+      xvar = x.var(dim, keepdim=True)
+    else:
+      xmean = self.running_mean
+      xvar = self.running_var
+
+    xhat = (x - xmean) / torch.sqrt(xvar + self.eps)
+    self.out = self.gamma * xhat + self.beta
+
+    if self.training:
+      with torch.no_grad():
+        self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * xmean
+        self.running_var = (1 - self.momentum) * self.running_var + self.momentum * xvar
+
+    return self.out
+
+  def parameters(self):
+    return [self.gamma, self.beta]
+
 class CNN(nn.Module):
   def __init__(self, words, n_ctx, n_embed, n_hidden):
     super(CNN, self).__init__()
     self.vocab = ["."] + sorted(set(c for w in words for c in w))
     self.itoc = { i: c for i, c in enumerate(self.vocab) }
     self.ctoi = { c: i for i, c in enumerate(self.vocab) }
+    self.toc = lambda a: [self.itoc[b] for b in a] if isinstance(a, Iterable) else self.itoc[a]
+    self.toi = lambda a: [self.ctoi[b] for b in a] if isinstance(a, Iterable) else self.ctoi[a]
     self.n_vocab = len(self.vocab)
     self.n_ctx = n_ctx
     self.n_embed = n_embed
@@ -267,9 +305,9 @@ class CNN(nn.Module):
     # TODO: how different is LayerNorm from BatchNorm1d? What are the tradeoffs?
     self.layers = nn.Sequential(
       nn.Embedding(self.n_vocab, n_embed),
-      MergeContiguous(2), nn.Linear(n_embed * 2, n_hidden, bias=False), nn.LayerNorm(n_hidden), nn.Tanh(),
-      MergeContiguous(2), nn.Linear(n_hidden * 2, n_hidden, bias=False), nn.LayerNorm(n_hidden), nn.Tanh(),
-      MergeContiguous(2), nn.Linear(n_hidden * 2, n_hidden, bias=False), nn.LayerNorm(n_hidden), nn.Tanh(),
+      MergeContiguous(2), nn.Linear(n_embed * 2, n_hidden, bias=False), BatchNorm1d(n_hidden), nn.Tanh(),
+      MergeContiguous(2), nn.Linear(n_hidden * 2, n_hidden, bias=False), BatchNorm1d(n_hidden), nn.Tanh(),
+      MergeContiguous(2), nn.Linear(n_hidden * 2, n_hidden, bias=False), BatchNorm1d(n_hidden), nn.Tanh(),
       nn.Linear(n_hidden, self.n_vocab), nn.Flatten(start_dim=1)
     )
 
@@ -284,7 +322,7 @@ class CNN(nn.Module):
     self.n_parameters = sum(p.nelement() for p in self.parameters())
     for p in self.parameters(): p.requires_grad = True
 
-    random.seed(1234567890) # set seed for reproducability
+    # random.seed(1234567890) # set seed for reproducability
     random.shuffle(words)
     n1, n2 = int(0.80 * len(words)), int(0.90 * len(words))
     self.data = { "train": self._build_dataset(words[:n1]), "valid": self._build_dataset(words[n1:n2]), "test": self._build_dataset(words[n2:]) }
@@ -337,14 +375,18 @@ def test_cnn(words):
   model.train()
   n_batch = 64
   n_steps = 200000
-  # n_steps = 10000
+  n_steps = 10000
+  # n_steps = 0
   stepi = torch.arange(0, n_steps)
   lri = 10 ** -(stepi / 200000 + 1)
   lossi = []
   for i in range(n_steps):
     x, y = (xtr[ix := torch.randint(0, xtr.shape[0], (n_batch,))], ytr[ix]) if n_batch > 0 else (xtr, ytr)
+    # for wix, cix in zip(x, y): print(f"{"".join(model.toc(wix.tolist()))} -> {model.toc(cix.item())}")
     lr = lri[i]
     x = model(x)
+    # print(x.shape)
+    # return
     loss = F.cross_entropy(x, y)
     if i % 10000 == 0: print(f"{i:6d}/{n_steps:6d}  batch size: {n_batch:4d}  loss: {loss.item():12.8f}")
     lossi.append(loss.log10().item())
@@ -364,7 +406,7 @@ def test_cnn(words):
 
 if __name__ == "__main__": 
   with open("names.txt", "r") as f: words = f.read().splitlines()
-  torch.manual_seed(1234567890)
+  # torch.manual_seed(1234567890)
   # test_mlp(words)
   # test_mlp_torch(words)
   test_cnn(words)
